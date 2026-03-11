@@ -317,6 +317,12 @@
       font-size:13px;
       margin-top:12px;
     }
+    .loading{
+      text-align:center;
+      color:var(--muted);
+      margin:12px 0;
+      font-size:14px;
+    }
     @media (max-width:900px){
       .main,.stats,.reminder-card{
         grid-template-columns:1fr;
@@ -355,7 +361,7 @@
     <section class="hero">
       <div class="badge">🎀 温柔记录每一次特殊时期</div>
       <h1>欧阳贝贝的特殊时期日历</h1>
-      <p class="sub">现在改成了更直观的日历形式。可以直接看到哪一天有记录，也保留了温柔提醒卡片，整体还是粉粉的、温馨可爱的感觉。</p>
+      <p class="sub">现在这是共享同步版。你和欧阳贝贝打开同一个网址，看到的是同一份记录。</p>
     </section>
 
     <section class="card reminder-card">
@@ -396,6 +402,8 @@
       </div>
     </section>
 
+    <div class="loading" id="loadingText">正在同步数据...</div>
+
     <section class="main">
       <div class="card">
         <div class="calendar-header">
@@ -427,19 +435,23 @@
         </div>
 
         <div class="tip" style="margin-top:14px;">
-          你可以直接点日历中的某一天，右边日期会自动填上。<br>
-          粉色高亮表示已经记录过，虚线提示表示预计下次日期。
+          你可以直接点日历中的某一天，右边日期会自动填上。粉色高亮表示已经记录过，虚线提示表示预计下次日期。
         </div>
 
         <div class="record-list" id="recordList"></div>
       </div>
     </section>
 
-    <div class="footer-note">数据只保存在当前浏览器本地，不会自动上传。</div>
+    <div class="footer-note">这是同步版网页。两个人打开同一个网址，会共享同一份记录。</div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script>
-    const STORAGE_KEY = "special_period_calendar_ouyangbeibei_v2";
+    const SUPABASE_URL = "https://cxwjqbwjkakrdjtealax.supabase.co";
+    const SUPABASE_ANON_KEY = "sb_publishable_wZ5n5SBoygsKF3Xygq9YoQ_b1yvL-ti";
+    const TABLE_NAME = "period_records";
+
+    const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
     const els = {
       latestDate: document.getElementById("latestDate"),
@@ -457,23 +469,13 @@
       symptomInput: document.getElementById("symptomInput"),
       noteInput: document.getElementById("noteInput"),
       addBtn: document.getElementById("addBtn"),
-      recordList: document.getElementById("recordList")
+      recordList: document.getElementById("recordList"),
+      loadingText: document.getElementById("loadingText")
     };
 
     let currentMonth = new Date();
     currentMonth.setDate(1);
-
-    function loadRecords() {
-      try {
-        return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
-      } catch {
-        return [];
-      }
-    }
-
-    function saveRecords(records) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-    }
+    let recordsCache = [];
 
     function escapeHtml(str) {
       return String(str)
@@ -513,17 +515,17 @@
     }
 
     function getSorted(records) {
-      return [...records].sort((a, b) => new Date(b.date) - new Date(a.date));
+      return [...records].sort((a, b) => new Date(b.record_date) - new Date(a.record_date));
     }
 
     function getStats(records) {
       const sorted = getSorted(records);
-      const latest = sorted[0]?.date || null;
+      const latest = sorted[0]?.record_date || null;
 
-      const asc = [...records].sort((a, b) => new Date(a.date) - new Date(b.date));
+      const asc = [...records].sort((a, b) => new Date(a.record_date) - new Date(b.record_date));
       const cycles = [];
       for (let i = 1; i < asc.length; i++) {
-        cycles.push(diffDays(asc[i - 1].date, asc[i].date));
+        cycles.push(diffDays(asc[i - 1].record_date, asc[i].record_date));
       }
       const avgCycle = average(cycles);
 
@@ -537,18 +539,30 @@
       return { latest, avgCycle, predictedISO, sorted };
     }
 
+    async function fetchRecords() {
+      const { data, error } = await supabaseClient
+        .from(TABLE_NAME)
+        .select("*")
+        .order("record_date", { ascending: false });
+
+      if (error) {
+        console.error(error);
+        alert("读取数据失败，请检查 Supabase 配置");
+        return [];
+      }
+      return data || [];
+    }
+
     function fillFormByDate(dateISO) {
       els.dateInput.value = dateISO;
-      const records = loadRecords();
-      const found = records.find(r => r.date === dateISO);
+      const found = recordsCache.find(r => r.record_date === dateISO);
       els.moodInput.value = found?.mood || "";
       els.symptomInput.value = found?.symptom || "";
       els.noteInput.value = found?.note || "";
     }
 
     function renderStats() {
-      const records = loadRecords();
-      const { latest, avgCycle, predictedISO } = getStats(records);
+      const { latest, avgCycle, predictedISO } = getStats(recordsCache);
 
       if (!latest) {
         els.latestDate.textContent = "还没有记录";
@@ -571,9 +585,8 @@
     }
 
     function renderCalendar() {
-      const records = loadRecords();
-      const { predictedISO } = getStats(records);
-      const recordMap = new Map(records.map(r => [r.date, r]));
+      const { predictedISO } = getStats(recordsCache);
+      const recordMap = new Map(recordsCache.map(r => [r.record_date, r]));
 
       const year = currentMonth.getFullYear();
       const month = currentMonth.getMonth();
@@ -651,7 +664,7 @@
     }
 
     function renderRecords() {
-      const records = getSorted(loadRecords());
+      const records = getSorted(recordsCache);
       els.recordList.innerHTML = "";
 
       if (!records.length) {
@@ -661,17 +674,17 @@
 
       records.slice(0, 6).forEach((item, index) => {
         const next = records[index + 1];
-        const gap = next ? `与上一次间隔 ${diffDays(next.date, item.date)} 天` : "最早的一条记录";
+        const gap = next ? `与上一次间隔 ${diffDays(next.record_date, item.record_date)} 天` : "最早的一条记录";
 
         const div = document.createElement("div");
         div.className = "record-item";
         div.innerHTML = `
           <div class="record-top">
             <div>
-              <div class="record-date">${formatDate(item.date)}</div>
+              <div class="record-date">${formatDate(item.record_date)}</div>
               <div class="record-gap">${gap}</div>
             </div>
-            <button class="btn light" onclick="deleteRecord('${item.date}')">删除</button>
+            <button class="btn light" onclick="deleteRecord('${item.record_date}')">删除</button>
           </div>
           ${item.mood ? `<div class="tag"><strong>心情：</strong>${escapeHtml(item.mood)}</div>` : ""}
           ${item.symptom ? `<div class="tag"><strong>症状：</strong>${escapeHtml(item.symptom)}</div>` : ""}
@@ -681,47 +694,64 @@
       });
     }
 
-    function saveCurrentForm() {
-      const date = els.dateInput.value;
-      if (!date) {
+    async function saveCurrentForm() {
+      const record_date = els.dateInput.value;
+      if (!record_date) {
         alert("先选一个日期哦");
         return;
       }
 
-      const records = loadRecords();
-      const index = records.findIndex(r => r.date === date);
       const data = {
-        date,
+        record_date,
         mood: els.moodInput.value.trim(),
         symptom: els.symptomInput.value.trim(),
         note: els.noteInput.value.trim()
       };
 
-      if (index >= 0) records[index] = data;
-      else records.push(data);
+      const { error } = await supabaseClient
+        .from(TABLE_NAME)
+        .upsert(data, { onConflict: "record_date" });
 
-      saveRecords(records);
-      renderAll();
+      if (error) {
+        console.error(error);
+        alert("保存失败，请检查数据库权限或配置");
+        return;
+      }
+
+      await refreshData();
       alert("保存成功啦");
     }
 
-    function deleteRecord(date) {
-      const records = loadRecords().filter(r => r.date !== date);
-      saveRecords(records);
+    async function deleteRecord(date) {
+      const { error } = await supabaseClient
+        .from(TABLE_NAME)
+        .delete()
+        .eq("record_date", date);
+
+      if (error) {
+        console.error(error);
+        alert("删除失败");
+        return;
+      }
+
       if (els.dateInput.value === date) {
         els.moodInput.value = "";
         els.symptomInput.value = "";
         els.noteInput.value = "";
       }
-      renderAll();
+
+      await refreshData();
     }
 
     window.deleteRecord = deleteRecord;
 
-    function renderAll() {
+    async function refreshData() {
+      els.loadingText.textContent = "正在同步数据...";
+      recordsCache = await fetchRecords();
       renderStats();
       renderCalendar();
       renderRecords();
+      els.loadingText.textContent = "数据已同步";
     }
 
     els.addBtn.onclick = saveCurrentForm;
@@ -739,8 +769,9 @@
     const todayISO = toISO(new Date());
     els.dateInput.value = todayISO;
 
-    renderAll();
-    fillFormByDate(todayISO);
+    refreshData().then(() => {
+      fillFormByDate(todayISO);
+    });
   </script>
 </body>
 </html>
