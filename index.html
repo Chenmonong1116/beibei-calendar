@@ -179,7 +179,6 @@
     .day.today{
       outline:2px solid #ffb3cb;
     }
-
     .day.period-start{
       background:linear-gradient(180deg,#ffb3cb,#ffe3ee);
       border-color:var(--pink-dark);
@@ -201,7 +200,6 @@
       border-style:dashed;
       border-color:#f2a8c3;
     }
-
     .day-number{
       font-weight:800;
       font-size:15px;
@@ -249,7 +247,6 @@
       border:1px solid var(--line);
       display:inline-block;
     }
-
     .form-grid{
       display:grid;
       gap:12px;
@@ -829,12 +826,32 @@
         note: els.noteInput.value.trim()
       };
 
-      const { error } = await supabaseClient
+      const { data: existing, error: checkError } = await supabaseClient
         .from(TABLE_NAME)
-        .upsert(data, { onConflict: "start_date" });
+        .select("id")
+        .eq("start_date", start_date)
+        .maybeSingle();
 
-      if (error) {
-        console.error(error);
+      if (checkError) {
+        console.error(checkError);
+        alert("查询旧记录失败，请检查数据库配置");
+        return;
+      }
+
+      let result;
+      if (existing) {
+        result = await supabaseClient
+          .from(TABLE_NAME)
+          .update(data)
+          .eq("start_date", start_date);
+      } else {
+        result = await supabaseClient
+          .from(TABLE_NAME)
+          .insert(data);
+      }
+
+      if (result.error) {
+        console.error(result.error);
         alert("保存失败，请检查数据库字段或权限");
         return;
       }
